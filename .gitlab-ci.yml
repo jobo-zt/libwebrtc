@@ -1,0 +1,123 @@
+# The build has two stages. The 'container' stage is used to build a Docker
+# container and push it to the project's container registry on fd.o GitLab.
+# This step is only run when the tag for the container changes, else it is
+# effectively a no-op. All of this infrastructure is inherited from the
+# wayland/ci-templates repository which is the recommended way to set up CI
+# infrastructure on fd.o GitLab.
+#
+# Once the container stage is done, we move on to the 'build' stage where we
+# run an autotools and meson build in parallel. Currently, tests are also run
+# as part of the build stage as there doesn't seem to be significant value to
+# splitting the stages at the moment.
+
+stages:
+  - container
+  - build
+
+variables:
+  # Update this tag when you want to trigger a rebuild the container in which
+  # CI runs, for example when adding new packages to FDO_DISTRIBUTION_PACKAGES.
+  # The tag is an arbitrary string that identifies the exact container
+  # contents.
+  BASE_TAG: '2021-10-19.1'
+  FDO_DISTRIBUTION_VERSION: '20.10'
+  FDO_UPSTREAM_REPO: 'pulseaudio/webrtc-audio-processing'
+
+include:
+  # We pull templates from master to avoid the overhead of periodically
+  # scanning for changes upstream. This does means builds might occasionally
+  # break due to upstream changing things, so if you see unexpected build
+  # failures, this might be one cause.
+  - project: 'freedesktop/ci-templates'
+    ref: 'master'
+    file: '/templates/ubuntu.yml'
+
+# Common container build template
+.ubuntu-container-build:
+  variables:
+    GIT_STRATEGY: none # no need to pull the whole tree for rebuilding the image
+
+    # Remember to update FDO_DISTRIBUTION_TAG when modifying this package list!
+    # Otherwise the changes won't have effect since an old container image will
+    # be used.
+    FDO_DISTRIBUTION_PACKAGES: >-
+      g++
+      gcc
+      git-core
+      cmake
+      libabsl-dev
+      meson
+      ninja-build
+      pkg-config
+      python3-setuptools
+
+# Used to extend both container and build jobs
+.ubuntu-x86_64:
+  variables:
+    FDO_DISTRIBUTION_TAG: "x86_64-$BASE_TAG"
+
+# Used to extend both container and build jobs
+.ubuntu-aarch64:
+  tags:
+    - aarch64
+  variables:
+    FDO_DISTRIBUTION_TAG: "aarch64-$BASE_TAG"
+
+build-container-x86_64:
+  extends:
+    - .fdo.container-build@ubuntu@x86_64
+    - .ubuntu-container-build
+    - .ubuntu-x86_64
+  stage: container
+
+build-container-aarch64:
+  extends:
+    - .fdo.container-build@ubuntu@aarch64
+    - .ubuntu-container-build
+    - .ubuntu-aarch64
+  stage: container
+
+# Common build template
+.build-distro-absl:
+  stage: build
+  extends:
+    - .fdo.distribution-image@ubuntu
+  script:
+    - meson build --wrap-mode=nofallback
+    - cd build
+    - ninja
+  artifacts:
+    paths:
+      - build/
+
+.build-vendored-absl:
+  stage: build
+  extends:
+    - .fdo.distribution-image@ubuntu
+  script:
+    - meson build --force-fallback-for=abseil-cpp
+    - cd build
+    - ninja
+  artifacts:
+    paths:
+      - build/
+
+build-distro-absl-x86_64:
+  extends:
+    - .build-distro-absl
+    - .ubuntu-x86_64
+
+build-vendored-absl-x86_64:
+  extends:
+    - .build-vendored-absl
+    - .ubuntu-x86_64
+
+build-distro-absl-aarch64:
+  extends:
+    - .build-distro-absl
+    - .ubuntu-aarch64
+
+build-vendored-absl-aarch64:
+  extends:
+    - .build-vendored-absl
+    - .ubuntu-aarch64
